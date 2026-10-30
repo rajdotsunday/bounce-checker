@@ -65,6 +65,11 @@ placeholder="PDF password enter karein (agar laga ho)">
 <button id="run">CHECK STATEMENT</button>
 
 <div id="status"></div>
+ <div id="refreshTimer"
+style="display:none;color:#6d28d9;font-weight:bold;margin-top:12px">
+Page automatically refresh hoga:
+<span id="timer">60</span> seconds
+</div>
 
 </div>
 
@@ -237,7 +242,29 @@ async function openPDF(data,password){
  }).promise;
 
 }
+function startAutoRefresh(){
 
+ let seconds=60;
+
+ const box=document.getElementById("refreshTimer");
+ const timer=document.getElementById("timer");
+
+ box.style.display="block";
+ timer.textContent=seconds;
+
+ const countdown=setInterval(()=>{
+
+  seconds--;
+  timer.textContent=seconds;
+
+  if(seconds<=0){
+   clearInterval(countdown);
+   location.reload();
+  }
+
+ },1000);
+
+}
 
 /* MAIN CHECKER */
 
@@ -423,6 +450,8 @@ $("run").addEventListener("click",async()=>{
 
   $("status").textContent=
    `Checking Complete. Total Pages: ${pdf.numPages}`;
+
+  startAutoRefresh();
 
 
  }catch(error){
