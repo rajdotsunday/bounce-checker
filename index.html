@@ -1,0 +1,465 @@
+
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#6d28d9">
+<title>Bank Statement Bounce Checker</title>
+
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;padding:16px;max-width:750px;margin:auto;
+ font-family:Arial,sans-serif;background:#f5f3ff;color:#252238
+}
+header{
+ background:linear-gradient(135deg,#6d28d9,#a855f7);
+ color:white;padding:22px;border-radius:16px
+}
+h1{font-size:22px;margin:0 0 7px}
+.panel{
+ background:white;padding:18px;margin-top:15px;
+ border-radius:15px;box-shadow:0 3px 15px #0000000d
+}
+label{display:block;font-weight:bold;margin:12px 0 7px}
+input{
+ width:100%;padding:13px;border:1px solid #ccc;
+ border-radius:10px;font-size:15px
+}
+button{
+ width:100%;padding:15px;margin-top:16px;
+ background:#6d28d9;color:white;border:0;
+ border-radius:10px;font-size:16px;font-weight:bold
+}
+button:disabled{opacity:.5}
+#status{margin-top:12px;font-size:14px}
+#results{display:none}
+.item{
+ border:1px solid #e5ddf5;padding:13px;
+ border-radius:10px;margin:10px 0;overflow-wrap:anywhere
+}
+.item strong{color:#6d28d9}
+.page{font-size:13px;color:#777;margin:5px 0}
+.count{margin:7px 0;font-size:14px}
+.note{font-size:12px;color:#777;line-height:1.5}
+</style>
+</head>
+
+<body>
+
+<header>
+<h1>Bank Statement Bounce Checker</h1>
+<div>Mobile & PC PDF Checking Tool</div>
+</header>
+
+<div class="panel">
+
+<label>Bank Statement PDF Select Karein</label>
+<input type="file" id="pdf" accept=".pdf,application/pdf">
+
+<label>PDF Password</label>
+<input type="password" id="password"
+placeholder="PDF password enter karein (agar laga ho)">
+
+<button id="run">CHECK STATEMENT</button>
+
+<div id="status"></div>
+
+</div>
+
+<div class="panel" id="results">
+
+<h3 id="summary"></h3>
+<div id="counts"></div>
+<div id="entries"></div>
+
+<p class="note">
+Keyword-based checking hai. Final loan verification ke liye
+original bank statement se transaction confirm karein.
+</p>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<script>
+
+const $ = id => document.getElementById(id);
+
+if(window.pdfjsLib){
+ pdfjsLib.GlobalWorkerOptions.workerSrc =
+ "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+
+
+/* CHECKING KEYWORDS */
+
+const patterns = {
+
+ "BOUNCE":[
+  /\bbounce\b/i,
+  /\bbounced\b/i,
+  /\bbouncing\b/i
+ ],
+
+ "RETURN":[
+  /\breturn\b/i,
+  /\breturned\b/i,
+  /\brtn\b/i,
+  /\bret\b/i
+ ],
+
+ "RETURN CHARGES":[
+  /return\s*charges?/i,
+  /return\s*chrg/i,
+  /return\s*chg/i
+ ],
+
+ "PENALTY":[
+  /\bpenalty\b/i,
+  /\bpenal\b/i,
+  /penal\s*charges?/i,
+  /late\s*payment\s*charges?/i
+ ],
+
+ "NACH RETURN":[
+  /nach\s*return/i,
+  /nach\s*ret/i,
+  /nach.*failed/i,
+  /nach.*failure/i
+ ],
+
+ "ECS RETURN":[
+  /ecs\s*return/i,
+  /\becs\b/i,
+  /ecsrt[n]?\d*/i,
+  /ecs\s*rtn/i,
+  /ecs.*failed/i,
+  /ecs.*failure/i
+ ],
+
+ "CHEQUE RETURN":[
+  /cheque\s*return/i,
+  /cheque\s*bounce/i,
+  /chq\s*return/i,
+  /chq\s*bounce/i
+ ],
+
+ "EMI BOUNCE":[
+  /emi\s*bounce/i,
+  /emi.*return/i,
+  /loan.*bounce/i
+ ]
+
+};
+
+
+/* SAFE HTML */
+
+function escapeHtml(text){
+
+ return String(text).replace(/[&<>"']/g,c=>({
+  "&":"&amp;",
+  "<":"&lt;",
+  ">":"&gt;",
+  '"':"&quot;",
+  "'":"&#39;"
+ }[c]));
+
+}
+
+
+/* EXTRACT PDF LINES */
+
+function extractLines(items){
+
+ const rows=[];
+
+ for(const item of items){
+
+  if(!item.str || !item.str.trim() || !item.transform)
+   continue;
+
+  const x=item.transform[4];
+  const y=item.transform[5];
+
+  let row=rows.find(r=>Math.abs(r.y-y)<2.5);
+
+  if(!row){
+   row={y,items:[]};
+   rows.push(row);
+  }
+
+  row.items.push({
+   x,
+   str:item.str.trim(),
+   width:item.width || 0
+  });
+
+ }
+
+ rows.sort((a,b)=>b.y-a.y);
+
+ return rows.map(row=>{
+
+  row.items.sort((a,b)=>a.x-b.x);
+
+  let output="";
+  let right=null;
+
+  for(const item of row.items){
+
+   if(output && right!==null && item.x-right>1.5){
+    output+=" ";
+   }
+
+   output+=item.str;
+
+   right=item.x+(item.width || item.str.length*2.5);
+
+  }
+
+  return output.replace(/\s+/g," ").trim();
+
+ }).filter(Boolean);
+
+}
+
+
+/* OPEN PDF WITH PASSWORD */
+
+async function openPDF(data,password){
+
+ return await pdfjsLib.getDocument({
+  data:data.slice(),
+  password:password || undefined
+ }).promise;
+
+}
+
+
+/* MAIN CHECKER */
+
+$("run").addEventListener("click",async()=>{
+
+ const file=$("pdf").files[0];
+
+ $("results").style.display="none";
+
+ if(!file){
+  $("status").textContent="Please select PDF first.";
+  return;
+ }
+
+ if(!window.pdfjsLib){
+  $("status").textContent="PDF reader load nahi hua. Internet check karein.";
+  return;
+ }
+
+ $("run").disabled=true;
+ $("status").textContent="Opening PDF...";
+
+ try{
+
+  const data=new Uint8Array(await file.arrayBuffer());
+
+  let password=$("password").value;
+  let pdf;
+
+  /* PASSWORD PROTECTION */
+
+  while(true){
+
+   try{
+
+    pdf=await openPDF(data,password);
+    break;
+
+   }catch(error){
+
+    if(
+     error.name==="PasswordException" ||
+     error.code===1 ||
+     error.code===2
+    ){
+
+     const entered=prompt(
+      error.code===2
+       ? "Wrong password. Enter correct password:"
+       : "Enter bank statement PDF password:"
+     );
+
+     if(entered===null){
+      throw new Error("Password entry cancelled.");
+     }
+
+     password=entered;
+     $("password").value=entered;
+
+    }else{
+     throw error;
+    }
+
+   }
+
+  }
+
+
+  $("status").textContent="Checking statement...";
+
+  const results=[];
+
+  /* PAGE BY PAGE CHECKING */
+
+  for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
+
+   $("status").textContent=
+    `Checking page ${pageNo} / ${pdf.numPages}...`;
+
+   const page=await pdf.getPage(pageNo);
+
+  const actualPageNumber = page.pageNumber;
+
+   const content=await page.getTextContent();
+
+   const lines=extractLines(content.items);
+
+   for(const line of lines){
+
+    for(const [category,regexes] of Object.entries(patterns)){
+
+     if(regexes.some(regex=>regex.test(line))){
+
+      results.push({
+       category:category,
+       page:actualPageNumber,
+       text:line
+      });
+
+     }
+
+    }
+
+   }
+
+  }
+
+
+  /* REMOVE EXACT DUPLICATES */
+
+  const unique=[
+   ...new Map(
+    results.map(item=>[
+     `${item.category}|${item.page}|${item.text}`,
+     item
+    ])
+   ).values()
+  ];
+
+
+  /* CATEGORY COUNTS */
+
+  const counts=Object.keys(patterns).map(category=>({
+
+   category:category,
+
+   total:unique.filter(
+    item=>item.category===category
+   ).length
+
+  }));
+
+
+  $("summary").textContent=
+   unique.length
+    ? `Total Matching Transactions: ${unique.length}`
+    : "No Matching Transactions Found";
+
+
+  $("counts").innerHTML=counts.map(item=>`
+
+   <div class="count">
+    ${item.total ? "⚠️" : "✓"}
+    <b>${item.category}</b>:
+    ${item.total
+      ? "FOUND ("+item.total+")"
+      : "NOT FOUND"}
+   </div>
+
+  `).join("");
+
+
+  /* SHOW ONLY MATCHING LINES */
+
+  $("entries").innerHTML=unique.length
+
+   ? "<h3>Matching Transactions</h3>" +
+
+     unique.map((item,index)=>`
+
+      <article class="item">
+
+       <strong>
+        ${index+1}. ${escapeHtml(item.category)}
+       </strong>
+
+       <div class="page">
+        Page Number: ${item.page}
+       </div>
+
+       <div>
+        ${escapeHtml(item.text)}
+       </div>
+
+      </article>
+
+     `).join("")
+
+   : '<p style="color:green">No matching transactions found.</p>';
+
+
+  $("results").style.display="block";
+
+  $("status").textContent=
+   `Checking Complete. Total Pages: ${pdf.numPages}`;
+
+
+ }catch(error){
+
+  $("status").textContent=
+   "Error: "+error.message;
+
+ }finally{
+
+  $("run").disabled=false;
+
+ }
+
+});
+
+</script>
+
+  <script>
+document.addEventListener("contextmenu", function(e) {
+    e.preventDefault();
+});
+  </script>
+
+  <script>
+document.addEventListener("keydown", function(e) {
+
+    if (
+        e.key === "F12" ||
+        (e.ctrlKey && e.shiftKey && ["I","J","C"].includes(e.key.toUpperCase())) ||
+        (e.ctrlKey && e.key.toUpperCase() === "U")
+    ) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+});
+  </script>
+
+</body>
+</html>
