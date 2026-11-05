@@ -30,9 +30,14 @@ input{
 button{
  width:100%;padding:15px;margin-top:16px;
  background:#6d28d9;color:white;border:0;
- border-radius:10px;font-size:16px;font-weight:bold
+ border-radius:10px;font-size:16px;font-weight:bold;
+ cursor:pointer
 }
 button:disabled{opacity:.5}
+#downloadPdf{
+ background:#15803d;
+ display:none;
+}
 #status{margin-top:12px;font-size:14px}
 #results{display:none}
 .item{
@@ -65,7 +70,8 @@ placeholder="PDF password enter karein (agar laga ho)">
 <button id="run">CHECK STATEMENT</button>
 
 <div id="status"></div>
- <div id="refreshTimer"
+
+<div id="refreshTimer"
 style="display:none;color:#6d28d9;font-weight:bold;margin-top:12px">
 Page automatically refresh hoga:
 <span id="timer">60</span> seconds
@@ -74,6 +80,8 @@ Page automatically refresh hoga:
 </div>
 
 <div class="panel" id="results">
+
+<button id="downloadPdf">⬇ DOWNLOAD PDF REPORT</button>
 
 <h3 id="summary"></h3>
 <div id="counts"></div>
@@ -88,9 +96,19 @@ original bank statement se transaction confirm karein.
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
+<!-- PDF DOWNLOAD LIBRARY -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
 <script>
 
 const $ = id => document.getElementById(id);
+
+let finalResults = [];
+let totalPages = 0;
+let sourceFileName = "";
+
+/* PDF.JS SETTINGS */
 
 if(window.pdfjsLib){
  pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -232,6 +250,76 @@ function extractLines(items){
 }
 
 
+/* JOIN TRANSACTION NARRATION LINES */
+
+function buildTransactions(lines){
+
+ const transactions=[];
+
+ let current=null;
+ let pending=[];
+
+ const datePattern =
+  /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/;
+
+ const isHeader = line =>
+  /^(date|particulars|narration|description|debit|credit|balance|transaction details|statement of account)\b/i.test(line.trim());
+
+ for(const line of lines){
+
+  if(isHeader(line)){
+   continue;
+  }
+
+  if(datePattern.test(line)){
+
+   if(current){
+    transactions.push(current);
+   }
+
+   current={
+    text:[...pending,line].join(" ").trim()
+   };
+
+   pending=[];
+
+  }else{
+
+   if(current){
+
+    current.text += " " + line;
+
+   }else{
+
+    pending.push(line);
+
+    // Avoid attaching too many page-header lines
+    if(pending.length>2){
+     pending.shift();
+    }
+
+   }
+
+  }
+
+ }
+
+ if(current){
+  transactions.push(current);
+ }
+
+ // If no date-based rows are found, retain original lines
+ if(!transactions.length){
+
+  return lines.map(line=>({text:line}));
+
+ }
+
+ return transactions;
+
+}
+
+
 /* OPEN PDF WITH PASSWORD */
 
 async function openPDF(data,password){
@@ -242,6 +330,10 @@ async function openPDF(data,password){
  }).promise;
 
 }
+
+
+/* AUTO REFRESH */
+
 function startAutoRefresh(){
 
  let seconds=60;
@@ -266,6 +358,118 @@ function startAutoRefresh(){
 
 }
 
+
+/* DOWNLOAD PDF REPORT */
+
+$("downloadPdf").addEventListener("click",()=>{
+
+ if(!finalResults.length){
+  alert("Download ke liye koi report available nahi hai.");
+  return;
+ }
+
+ if(!window.jspdf || !window.jspdf.jsPDF){
+  alert("PDF download library load nahi hui. Internet check karein.");
+  return;
+ }
+
+ try{
+
+  const {jsPDF}=window.jspdf;
+
+  const doc=new jsPDF({
+   orientation:"landscape",
+   unit:"mm",
+   format:"a4"
+  });
+
+  doc.setFont("helvetica","bold");
+  doc.setFontSize(17);
+
+  doc.text("BANK STATEMENT BOUNCE CHECK REPORT",14,16);
+
+  doc.setFont("helvetica","normal");
+  doc.setFontSize(10);
+
+  doc.text("Source File: "+sourceFileName,14,24);
+  doc.text("Total Pages: "+totalPages,14,30);
+  doc.text("Matching Transactions: "+finalResults.length,14,36);
+
+  const tableRows=finalResults.map((item,index)=>{
+
+   const dateMatch=item.text.match(
+    /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/
+   );
+
+   return [
+    index+1,
+    dateMatch ? dateMatch[0] : "-",
+    item.categories.join(", "),
+    item.text,
+    item.page
+   ];
+
+  });
+
+  doc.autoTable({
+
+   startY:43,
+
+   head:[[
+    "S.No.",
+    "Date",
+    "Category",
+    "Narration / Transaction Details",
+    "Page"
+   ]],
+
+   body:tableRows,
+
+   theme:"grid",
+
+   styles:{
+    font:"helvetica",
+    fontSize:8,
+    cellPadding:3,
+    overflow:"linebreak",
+    valign:"middle"
+   },
+
+   headStyles:{
+    fillColor:[109,40,217],
+    textColor:255
+   },
+
+   columnStyles:{
+    0:{cellWidth:13},
+    1:{cellWidth:23},
+    2:{cellWidth:35},
+    3:{cellWidth:"auto"},
+    4:{cellWidth:15}
+   },
+
+   margin:{
+    left:14,
+    right:14
+   }
+
+  });
+
+  const safeName=sourceFileName
+   .replace(/\.pdf$/i,"")
+   .replace(/[^a-z0-9_-]/gi,"_");
+
+  doc.save("Bounce_Report_"+safeName+".pdf");
+
+ }catch(error){
+
+  alert("PDF download error: "+error.message);
+
+ }
+
+});
+
+
 /* MAIN CHECKER */
 
 $("run").addEventListener("click",async()=>{
@@ -273,6 +477,7 @@ $("run").addEventListener("click",async()=>{
  const file=$("pdf").files[0];
 
  $("results").style.display="none";
+ $("downloadPdf").style.display="none";
 
  if(!file){
   $("status").textContent="Please select PDF first.";
@@ -337,6 +542,9 @@ $("run").addEventListener("click",async()=>{
 
   const results=[];
 
+  totalPages=pdf.numPages;
+  sourceFileName=file.name;
+
   /* PAGE BY PAGE CHECKING */
 
   for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
@@ -346,25 +554,38 @@ $("run").addEventListener("click",async()=>{
 
    const page=await pdf.getPage(pageNo);
 
-  const actualPageNumber = page.pageNumber;
+   const actualPageNumber=page.pageNumber;
 
    const content=await page.getTextContent();
 
    const lines=extractLines(content.items);
 
-   for(const line of lines){
+   // Join narration lines with dated transaction lines
+   const transactions=buildTransactions(lines);
+
+   for(const transaction of transactions){
+
+    const line=transaction.text;
+
+    const matchedCategories=[];
 
     for(const [category,regexes] of Object.entries(patterns)){
 
      if(regexes.some(regex=>regex.test(line))){
-
-      results.push({
-       category:category,
-       page:actualPageNumber,
-       text:line
-      });
-
+      matchedCategories.push(category);
      }
+
+    }
+
+    if(matchedCategories.length){
+
+     results.push({
+
+      categories:matchedCategories,
+      page:actualPageNumber,
+      text:line
+
+     });
 
     }
 
@@ -373,34 +594,26 @@ $("run").addEventListener("click",async()=>{
   }
 
 
-  /* REMOVE EXACT DUPLICATES */
-
-  const unique=[
-   ...new Map(
-    results.map(item=>[
-     `${item.category}|${item.page}|${item.text}`,
-     item
-    ])
-   ).values()
-  ];
-
-
   /* CATEGORY COUNTS */
 
   const counts=Object.keys(patterns).map(category=>({
 
    category:category,
 
-   total:unique.filter(
-    item=>item.category===category
+   total:results.filter(
+    item=>item.categories.includes(category)
    ).length
 
   }));
 
 
+  // Save final report for PDF download
+  finalResults=results;
+
+
   $("summary").textContent=
-   unique.length
-    ? `Total Matching Transactions: ${unique.length}`
+   results.length
+    ? `Total Matching Transactions: ${results.length}`
     : "No Matching Transactions Found";
 
 
@@ -417,18 +630,18 @@ $("run").addEventListener("click",async()=>{
   `).join("");
 
 
-  /* SHOW ONLY MATCHING LINES */
+  /* SHOW MATCHING TRANSACTIONS */
 
-  $("entries").innerHTML=unique.length
+  $("entries").innerHTML=results.length
 
    ? "<h3>Matching Transactions</h3>" +
 
-     unique.map((item,index)=>`
+     results.map((item,index)=>`
 
       <article class="item">
 
        <strong>
-        ${index+1}. ${escapeHtml(item.category)}
+        ${index+1}. ${escapeHtml(item.categories.join(" / "))}
        </strong>
 
        <div class="page">
@@ -447,6 +660,10 @@ $("run").addEventListener("click",async()=>{
 
 
   $("results").style.display="block";
+
+  if(results.length){
+   $("downloadPdf").style.display="block";
+  }
 
   $("status").textContent=
    `Checking Complete. Total Pages: ${pdf.numPages}`;
@@ -469,13 +686,13 @@ $("run").addEventListener("click",async()=>{
 
 </script>
 
-  <script>
+<script>
 document.addEventListener("contextmenu", function(e) {
     e.preventDefault();
 });
-  </script>
+</script>
 
-  <script>
+<script>
 document.addEventListener("keydown", function(e) {
 
     if (
@@ -488,7 +705,7 @@ document.addEventListener("keydown", function(e) {
     }
 
 });
-  </script>
+</script>
 
 </body>
 </html>
